@@ -3,7 +3,7 @@ name = "scholia-a2a"
 version = "0.1.0"
 description = "Reference implementation of the Scholia Provenance Extension for A2A (draft 0.1)"
 requires-python = ">=3.11"
-dependencies = ["a2a-sdk==1.2.1", "scholialang==0.7.2", "cryptography", "jsonschema", "httpx", "uvicorn", "starlette"]
+dependencies = ["a2a-sdk[http-server]==1.2.1", "scholialang==0.7.2", "cryptography", "jsonschema", "httpx", "uvicorn", "starlette"]
 
 [project.optional-dependencies]
 test = ["pytest", "pytest-asyncio"]
