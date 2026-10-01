@@ -131,7 +131,7 @@ Things the implementation taught us about draft 0.1, for the next revision:
    in-band activation signal (item 3) is the practical one.
 5. **`required: false` will not appear on the wire.** proto3 JSON serialization omits default-valued fields, so the
    SDK-served card shows no `required` key. Receivers must treat absence as false; the spec should say so. Likewise
-   `max_inline_bytes` round-trips through `google.protobuf.Struct` as a double (`65536.0` in Python).
+   `max_inline_bytes` round-trips through `google.protobuf.Struct` as a double: the served card literally says `65536.0`.
 6. **Identity binding (open question, section 8).** We chose `params.public_key_jwk` (Ed25519 OKP JWK) on the Agent Card
    entry, with `kid` in the JWS header. It works for responders. Suggest the spec allow `public_key_jwk` or `jwks_uri` in
    params and recommend Agent Card signatures to bind them. Requesters (pure clients) have no card: allow an optional
