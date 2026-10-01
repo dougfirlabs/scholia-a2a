@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scholialang.org/ext/a2a/provenance/v1/schema.json",
+  "title": "Scholia Provenance Extension for A2A, v1 metadata block",
+  "description": "The extension's fields as they appear in an A2A Message or Artifact `metadata` map. Keys are prefixed with the extension URI. Draft 0.1.",
+  "type": "object",
+  "properties": {
+    "https://scholialang.org/ext/a2a/provenance/v1/trace": { "$ref": "#/$defs/trace" },
+    "https://scholialang.org/ext/a2a/provenance/v1/sha256": { "$ref": "#/$defs/hash" },
+    "https://scholialang.org/ext/a2a/provenance/v1/parent": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/hash" },
+      "uniqueItems": true
+    },
+    "https://scholialang.org/ext/a2a/provenance/v1/claims": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/claim" }
+    },
+    "https://scholialang.org/ext/a2a/provenance/v1/validator": { "$ref": "#/$defs/validator" },
+    "https://scholialang.org/ext/a2a/provenance/v1/signature": {
+      "type": "string",
+      "description": "JWS compact serialization over the sha256 value.",
+      "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+    },
+    "https://scholialang.org/ext/a2a/provenance/v1/audit": { "$ref": "#/$defs/audit" }
+  },
+  "required": [
+    "https://scholialang.org/ext/a2a/provenance/v1/trace",
+    "https://scholialang.org/ext/a2a/provenance/v1/sha256"
+  ],
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "description": "sha256 of the canonical trace body. Preferred form is `sha256:<64 hex>`; bare hex is accepted.",
+      "pattern": "^(sha256:)?[0-9a-f]{64}$"
+    },
+    "atomId": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_:.\\-]+$" },
+    "trace": {
+      "type": "object",
+      "oneOf": [
+        {
+          "properties": {
+            "mode": { "const": "inline" },
+            "format": { "enum": ["srml", "json"] },
+            "body": {
+              "description": "SRML text when format=srml; a JSON trace object when format=json.",
+              "type": ["string", "object"]
+            }
+          },
+          "required": ["mode", "format", "body"],
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "mode": { "const": "reference" },
+            "format": { "enum": ["srml", "json"] },
+            "uri": { "type": "string", "format": "uri" }
+          },
+          "required": ["mode", "uri"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "claim": {
+      "type": "object",
+      "properties": {
+        "finding": { "$ref": "#/$defs/atomId" },
+        "depends_on": { "type": "array", "items": { "$ref": "#/$defs/atomId" }, "minItems": 1, "uniqueItems": true }
+      },
+      "required": ["finding", "depends_on"],
+      "additionalProperties": false
+    },
+    "validator": {
+      "type": "object",
+      "properties": {
+        "version": { "type": "string" },
+        "ok": { "type": "boolean" },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "rule": { "type": "string" },
+              "atom_id": { "type": "string" },
+              "message": { "type": "string" }
+            },
+            "required": ["rule", "message"]
+          }
+        }
+      },
+      "required": ["version", "ok", "errors"],
+      "additionalProperties": false
+    },
+    "audit": {
+      "type": "object",
+      "properties": {
+        "level": { "enum": ["L1", "L2", "L3"] },
+        "by": { "type": "string" },
+        "attestation_uri": { "type": "string", "format": "uri" }
+      },
+      "required": ["level"],
+      "additionalProperties": true
+    }
+  }
+}
