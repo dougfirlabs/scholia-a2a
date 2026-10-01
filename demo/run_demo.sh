@@ -24,5 +24,6 @@ echo "agents up: analyst :9602, planner :9601"
 
 "$PY" -m demo.scenario --out "$OUT"
 RC=$?
+[ $RC -eq 0 ] && "$PY" -m demo.walkthrough --transcript "$OUT/transcript.json" --graph "$OUT/provenance-graph.html" --out "$OUT/walkthrough.html" || RC=1
 echo "exit $RC ($([ $RC -eq 0 ] && echo PASS || echo FAIL))"
 exit $RC

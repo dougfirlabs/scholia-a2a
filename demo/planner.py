@@ -121,6 +121,11 @@ async def run_planner(
         if activate:
             params = ServiceParametersFactory.create([with_a2a_extensions([EXTENSION_URI])])
             ctx = ClientCallContext(service_parameters=params)
+        request_record = {
+            "http_headers": dict(ctx.service_parameters) if ctx else {},
+            "jsonrpc_method": "SendMessage",
+            "message": MessageToDict(msg),
+        }
         task_dict: dict[str, Any] = {}
         async for resp in client.send_message(SendMessageRequest(message=msg), context=ctx):
             if resp.HasField("task"):
@@ -154,6 +159,8 @@ async def run_planner(
         "answer": answer,
         "task": task_dict,
         "requester_metadata": req_meta,
+        "analyst_card": MessageToDict(card),
+        "request": request_record,
         "checks": checks,
     }
     if not activate:
@@ -193,6 +200,11 @@ async def run_planner(
     result.update(
         {
             "artifact_metadata": art_meta,
+            "tamper_changes": {
+                "flip_polarity": 'In a copy of the artifact metadata, the first polarity="refutes" in the trace body was changed to polarity="supports". Nothing else touched.',
+                "flip_and_rehash": "Same flip, and the attacker also recomputed sha256 over the altered body so the hash check passes.",
+                "bad_claim": 'The claims list was replaced with {"finding": "F_01", "depends_on": ["E_99"]}: a dependency on evidence that does not exist in the trace.',
+            },
             "verification": v.safe_summary(),
             "tamper": {"flip_polarity": v1.safe_summary(), "flip_and_rehash": v2.safe_summary(), "bad_claim": v3.safe_summary()},
             "echo_header": echo,
