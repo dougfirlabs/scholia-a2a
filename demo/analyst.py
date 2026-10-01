@@ -68,7 +68,7 @@ def build_trace(x: str, y: str) -> tuple[str, dict[str, Any]]:
     ev.append(("supports" if fx["extensions"] or fy["extensions"] else "neutral", f"{y}: {fy['note']}"))
     supports = sum(1 for p, _ in ev if p == "supports")
     refutes = sum(1 for p, _ in ev if p == "refutes")
-    status = "met" if supports > refutes else "unmet"
+    status = "met" if refutes == 0 and supports > 0 else "unmet"
     lines = [
         '<Step id="S_01">',
         f'  <Hypothesis id="H_01">{_x(x)} and {_x(y)} can interoperate over A2A without custom glue.</Hypothesis>',

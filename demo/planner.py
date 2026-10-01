@@ -135,7 +135,7 @@ async def run_planner(
         async with httpx.AsyncClient(timeout=30.0) as http:
             r = await http.post(
                 analyst_url + RPC_PATH,
-                headers={HTTP_EXTENSION_HEADER: EXTENSION_URI, "Content-Type": "application/json"},
+                headers={HTTP_EXTENSION_HEADER: EXTENSION_URI, "A2A-Version": "1.0", "Content-Type": "application/json"},
                 json={"jsonrpc": "2.0", "id": "echo-probe", "method": "GetTask", "params": {"id": "does-not-exist"}},
             )
             echo = r.headers.get(HTTP_EXTENSION_HEADER)

@@ -175,8 +175,8 @@ def render_html(graph: ProvenanceGraph, title: str = "Scholia provenance graph",
         cols.setdefault(graph.depth(n.sha256), []).append(n)
     ncols = (max(cols) + 1) if cols else 1
 
-    card_w, col_gap, row_h, head_h, pad = 330, 70, 36, 64, 12
-    margin_l = 24
+    card_w, col_gap, row_h, head_h, pad = 322, 96, 36, 76, 12
+    margin_l = 8
     positions: dict[str, tuple[float, float, float]] = {}  # sha -> (x, y, h)
     col_heights: dict[int, float] = {}
     for d in range(ncols):
@@ -215,7 +215,7 @@ def render_html(graph: ProvenanceGraph, title: str = "Scholia provenance graph",
             x2, y2 = px + card_w, py + 30
             mx = (x1 + x2) / 2
             svg.append(f'<path d="M{x1} {y1} C{mx} {y1} {mx} {y2} {x2} {y2}" stroke="#58a6ff" stroke-width="2" fill="none" marker-end="url(#arr)"/>')
-            svg.append(f'<text x="{mx}" y="{min(y1,y2)-8}" fill="#58a6ff" font-size="10" text-anchor="middle">parent = sha256 of requester trace</text>')
+            svg.append(f'<text x="{mx}" y="{min(y1,y2)-6}" fill="#58a6ff" font-size="10" text-anchor="middle">parent</text>')
     # Cards.
     for n in nodes:
         x, y, h = positions[n.sha256]
@@ -226,9 +226,10 @@ def render_html(graph: ProvenanceGraph, title: str = "Scholia provenance graph",
         badge = "VERIFIED" if ok else ("FAILED" if ok is False else "UNCHECKED")
         bcol = "#3fb950" if ok else ("#f85149" if ok is False else "#8b949e")
         svg.append(f'<text x="{x+card_w-14}" y="{y+22}" fill="{bcol}" font-size="11" font-weight="700" text-anchor="end">{badge}</text>')
-        svg.append(f'<text x="{x+14}" y="{y+40}" fill="#8b949e" font-size="10.5" font-family="ui-monospace,Menlo,monospace">sha256:{e(_short(n.sha256))}…  {e(n.label)}</text>')
+        svg.append(f'<text x="{x+14}" y="{y+40}" fill="#8b949e" font-size="10.5" font-family="ui-monospace,Menlo,monospace">sha256:{e(_short(n.sha256))}…</text>')
         sig = n.verify.safe_summary()["signature"] if n.verify else "none"
         svg.append(f'<text x="{x+14}" y="{y+54}" fill="#8b949e" font-size="10.5">signature: {e(sig)} · validator {e(str(n.verify.validator_version or "") if n.verify else "")}</text>')
+        svg.append(f'<text x="{x+14}" y="{y+68}" fill="#c9d1d9" font-size="10.5">{e(n.label[:48])}</text>')
         row_y = {}
         for i, a in enumerate(n.atoms):
             ry = y + head_h + i * row_h
