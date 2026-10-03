@@ -1,18 +1,18 @@
 """Build the provenance metadata block (spec section 4).
 
 `build_provenance()` turns a Scholialang trace into the metadata fields of
-the extension: canonical hash, declared claims, validator record, optional
-signature, in inline or reference mode.
+the extension: canonical hash (4.1), declared claims (4.2), optional
+redaction (4.3), validator record, optional signature and signer (4.4), in
+inline or reference mode. SRML is the only v1 format; the draft-0.1 json
+mapping was removed in 0.2 (section 4, "Formats"; open question 9.3).
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Iterator, Protocol
-from xml.sax.saxutils import escape, quoteattr
+from typing import Any, Iterable, Iterator, Protocol
 
 import scholialang
 from scholialang.atoms import Atom, Step
@@ -21,12 +21,12 @@ from scholialang.parser import ScholiaParseError
 from . import ext
 
 HASH_PREFIX = "sha256:"
-FORMATS = ("srml", "json")
+FORMATS = (ext.FORMAT,)
 
-# Atom kinds a Finding may legitimately depend on, per the spec's example
-# (`{finding: "F_01", depends_on: ["E_01"]}`) and scholialang's own
-# Concluding rule (REFER targets must be Finding/Observation/Evidence).
-EVIDENCE_KINDS = ("Evidence", "Observation")
+# Atom kinds a Finding may depend on. Section 4.2 defines the cited set in
+# terms of Evidence atoms only (inline REFER to an Evidence id, or Evidence
+# `for` = Finding `for_hyp`).
+EVIDENCE_KINDS = ("Evidence",)
 
 _REFER_RE = re.compile(r"\bREFER:([A-Za-z0-9_:.\-]+)")
 
@@ -37,42 +37,47 @@ class Signer(Protocol):
     def sign(self, sha256: str) -> str: ...
 
 
-# ---------------------------------------------------------------- canonical
+# ---------------------------------------------------------- canonical (4.1)
 
 
-def canonical_bytes(body: Any, fmt: str = "srml") -> bytes:
-    """Canonical byte form of a trace body, the input to sha256.
+def canonical_bytes(body: str, fmt: str = ext.FORMAT) -> bytes:
+    """Canonical byte form of an SRML body, the input to sha256 (section 4.1).
 
-    srml: text; CRLF -> LF, trailing whitespace stripped per line, leading and
-          trailing blank lines dropped, one final newline, UTF-8.
-    json: JSON value; keys sorted, no insignificant whitespace, UTF-8.
+    (1) CRLF and CR -> LF; (2) trailing whitespace stripped from every line;
+    (3) leading and trailing blank lines dropped; (4) exactly one final LF;
+    (5) UTF-8.
     """
-    if fmt == "srml":
-        if not isinstance(body, str):
-            raise TypeError("srml body must be a str")
-        lines = [ln.rstrip() for ln in body.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
-        text = "\n".join(lines).strip("\n")
-        return (text + "\n").encode("utf-8")
-    if fmt == "json":
-        if isinstance(body, str):
-            body = json.loads(body)
-        return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    raise ValueError(f"unknown trace format {fmt!r}; expected one of {FORMATS}")
+    check_format(fmt)
+    if not isinstance(body, str):
+        raise TypeError("srml body must be a str")
+    lines = [ln.rstrip() for ln in body.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    while lines and lines[0] == "":
+        lines.pop(0)
+    while lines and lines[-1] == "":
+        lines.pop()
+    return ("\n".join(lines) + "\n").encode("utf-8")
 
 
-def sha256_of(body: Any, fmt: str = "srml") -> str:
-    """`sha256:<hex>` of the canonical body."""
+def sha256_of(body: str, fmt: str = ext.FORMAT) -> str:
+    """`sha256:<64 lowercase hex>` of the canonical body (the only emitted form)."""
     return HASH_PREFIX + hashlib.sha256(canonical_bytes(body, fmt)).hexdigest()
 
 
 def normalize_hash(value: str) -> str:
-    """Accept bare hex or `sha256:`-prefixed hex; return the prefixed form."""
-    v = value.strip().lower()
+    """Accept `sha256:`-prefixed hex (0.2) or bare hex (0.1 senders); return the prefixed form."""
+    v = str(value).strip().lower()
     if v.startswith(HASH_PREFIX):
         v = v[len(HASH_PREFIX):]
     if not re.fullmatch(r"[0-9a-f]{64}", v):
         raise ValueError(f"not a sha256 hash: {value!r}")
     return HASH_PREFIX + v
+
+
+def check_format(fmt: Any) -> str:
+    """Return `fmt` if it is the v1 format; raise ValueError otherwise (never guess)."""
+    if fmt not in FORMATS:
+        raise ValueError(f"unknown trace format {fmt!r}; v1 defines only {ext.FORMAT!r}")
+    return fmt
 
 
 # ------------------------------------------------------------- trace access
@@ -88,47 +93,14 @@ def walk_atoms(steps: Iterable[Step]) -> Iterator[Atom]:
             stack[:0] = list(atom.children)
 
 
-def json_to_srml(body: Any) -> str:
-    """Render the json format (`{"steps":[{"id","atoms":[...]}]}`) as SRML.
-
-    Each atom is `{"kind","id","attrs":{},"content":"","children":[]}`. This
-    is the canonical mapping used both to validate json-format traces and to
-    hash-check that both formats describe the same trace.
-    """
-    if isinstance(body, str):
-        body = json.loads(body)
-
-    def atom_xml(a: dict[str, Any], indent: str) -> str:
-        kind = a["kind"]
-        attrs = {"id": a.get("id")} if a.get("id") else {}
-        attrs.update(a.get("attrs") or {})
-        attr_text = "".join(f" {k}={quoteattr(str(v))}" for k, v in attrs.items() if v is not None)
-        content = escape(str(a.get("content") or ""))
-        children = a.get("children") or []
-        if not children and not content:
-            return f"{indent}<{kind}{attr_text}/>"
-        inner = content
-        if children:
-            inner += "\n" + "\n".join(atom_xml(c, indent + "  ") for c in children) + "\n" + indent
-        return f"{indent}<{kind}{attr_text}>{inner}</{kind}>"
-
-    out: list[str] = []
-    for step in body.get("steps", []):
-        sid = f' id={quoteattr(step["id"])}' if step.get("id") else ""
-        out.append(f"<Step{sid}>")
-        out.extend(atom_xml(a, "  ") for a in step.get("atoms", []))
-        out.append("</Step>")
-    return "\n".join(out) + "\n"
-
-
-def parse_trace(body: Any, fmt: str = "srml") -> list[Step]:
-    """Parse either format with scholialang; raises ScholiaParseError."""
-    text = body if fmt == "srml" else json_to_srml(body)
-    return scholialang.parse(text)
+def parse_trace(body: str, fmt: str = ext.FORMAT) -> list[Step]:
+    """Parse an SRML body with scholialang; raises ScholiaParseError."""
+    check_format(fmt)
+    return scholialang.parse(body)
 
 
 def redact_srml(body: str) -> str:
-    """Redaction profile: keep atom kinds, ids, attributes and edges; drop prose.
+    """Redaction profile (section 4.3): keep atom kinds, ids, attributes and edges; drop prose.
 
     Inline `REFER:`/`IMPLIES:` tokens are kept (they are edges); everything
     else in the element text is removed. Applied before hashing, so the
@@ -144,7 +116,7 @@ def redact_srml(body: str) -> str:
             tokens = keep.findall(el.text)
             el.text = (" ".join(tokens) + " ") if tokens else None
         if el.tail:
-            el.tail = "\n" if el.tail.strip() == "" else "\n"
+            el.tail = "\n"
         for child in el:
             scrub(child)
 
@@ -154,24 +126,18 @@ def redact_srml(body: str) -> str:
     return text.strip() + "\n"
 
 
-# ------------------------------------------------------------------ claims
+# ------------------------------------------------------------- claims (4.2)
 
 
-def extract_claims(steps: Iterable[Step]) -> list[dict[str, Any]]:
-    """Declared Finding -> Evidence dependencies, derived from the trace.
-
-    A Finding depends on: (a) each REFER target in its operators that resolves
-    to an Evidence/Observation atom, and (b) each Evidence atom whose `for`
-    names the hypothesis the Finding closes (`for_hyp`). Findings with no
-    dependencies are omitted. Output is sorted and deterministic.
-    """
+def cited_evidence(steps: Iterable[Step]) -> dict[str, set[str]]:
+    """Finding id -> the cited set: inline REFER to Evidence ids, union Evidence sharing the Finding's hypothesis."""
     atoms = list(walk_atoms(steps))
     by_id = {a.id: a for a in atoms if a.id}
-    evidence_for_hyp: dict[str, list[str]] = {}
+    evidence_for_hyp: dict[str, set[str]] = {}
     for a in atoms:
         if a.kind == "Evidence" and a.id and getattr(a, "for_ref", None):
-            evidence_for_hyp.setdefault(a.for_ref, []).append(a.id)
-    claims: list[dict[str, Any]] = []
+            evidence_for_hyp.setdefault(a.for_ref, set()).add(a.id)
+    cited: dict[str, set[str]] = {}
     for a in atoms:
         if a.kind != "Finding" or not a.id:
             continue
@@ -185,39 +151,38 @@ def extract_claims(steps: Iterable[Step]) -> list[dict[str, Any]]:
                 deps.add(target)
         hyp = getattr(a, "for_hyp", None)
         if hyp:
-            deps.update(evidence_for_hyp.get(hyp, []))
-        if deps:
-            claims.append({"finding": a.id, "depends_on": sorted(deps)})
-    claims.sort(key=lambda c: c["finding"])
-    return claims
+            deps.update(evidence_for_hyp.get(hyp, set()))
+        cited[a.id] = deps
+    return cited
+
+
+def extract_claims(steps: Iterable[Step]) -> list[dict[str, Any]]:
+    """Declared claims derived from the trace: one entry per Finding with a non-empty cited set, sorted."""
+    return [
+        {"finding": fid, "depends_on": sorted(deps)}
+        for fid, deps in sorted(cited_evidence(steps).items())
+        if deps
+    ]
 
 
 # --------------------------------------------------------------- validator
 
 
-def run_validator(body: Any, fmt: str = "srml") -> dict[str, Any]:
-    """`{version, ok, errors[]}` as the spec's `validator` object."""
+def run_validator(body: str, fmt: str = ext.FORMAT) -> dict[str, Any]:
+    """`{validator_version, grammar_version, ok, errors[]}`: the spec's `validator` object."""
+    base = {"validator_version": scholialang.SCHOLIA_VALIDATOR_VERSION, "grammar_version": ext.GRAMMAR_VERSION}
     try:
         steps = parse_trace(body, fmt)
     except (ScholiaParseError, ValueError, KeyError, TypeError) as exc:
-        return {
-            "version": scholialang.SCHOLIA_VALIDATOR_VERSION,
-            "ok": False,
-            "errors": [{"rule": "parse", "atom_id": "", "message": str(exc)}],
-        }
+        return {**base, "ok": False, "errors": [{"rule": "parse", "atom_id": "", "message": str(exc)}]}
     except Exception as exc:  # parser raised something unexpected; still a failure, never a crash
-        return {
-            "version": scholialang.SCHOLIA_VALIDATOR_VERSION,
-            "ok": False,
-            "errors": [{"rule": "parse", "atom_id": "", "message": f"{type(exc).__name__}: {exc}"}],
-        }
+        return {**base, "ok": False, "errors": [{"rule": "parse", "atom_id": "", "message": f"{type(exc).__name__}: {exc}"}]}
     result = scholialang.validate(steps)
     return {
-        "version": result.scholia_validator_version,
+        **base,
+        "validator_version": result.scholia_validator_version,
         "ok": bool(result.ok),
-        "errors": [
-            {"rule": e.rule, "atom_id": e.atom_id or "", "message": e.message} for e in result.errors
-        ],
+        "errors": [{"rule": e.rule, "atom_id": e.atom_id or "", "message": e.message} for e in result.errors],
     }
 
 
@@ -239,8 +204,8 @@ class Provenance:
 
 
 def build_provenance(
-    trace_body: Any,
-    fmt: str = "srml",
+    trace_body: str,
+    fmt: str = ext.FORMAT,
     parents: Iterable[str] = (),
     claims: list[dict[str, Any]] | None = None,
     mode: str = "inline",
@@ -248,62 +213,83 @@ def build_provenance(
     signer: Signer | None = None,
     *,
     redact: bool = False,
+    full_sha256: bool = True,
+    signer_jwk: dict[str, Any] | None = None,
+    agent_card_url: str | None = None,
     audit: dict[str, Any] | None = None,
     max_inline_bytes: int = ext.MAX_INLINE_BYTES,
 ) -> dict[str, Any]:
     """Return the metadata dict (URI-prefixed keys) for a trace.
 
+    The caller MUST also list `EXTENSION_URI` in the Message's or Artifact's
+    `extensions` field (section 3, in-band signal).
+
     Args:
-        trace_body: SRML text, or a json-format trace (dict or JSON text).
-        fmt: "srml" | "json".
-        parents: upstream trace hashes (bare hex or `sha256:` form).
+        trace_body: SRML text.
+        fmt: must be "srml" (the only v1 format).
+        parents: upstream trace hashes (bare hex or `sha256:` form; emitted prefixed).
         claims: declared Finding dependencies; auto-extracted when None.
         mode: "inline" ships the body; "reference" ships `uri` only (sha256 is
               identical in both modes, by the spec).
         uri: required in reference mode.
         signer: optional JWS signer over the sha256.
-        redact: apply the redaction profile (srml only) before hashing.
+        redact: apply the redaction profile before hashing; sets `redacted: true`
+              and, with `full_sha256`, the unredacted body's hash (section 4.3).
+        signer_jwk: for requesters without an Agent Card: ship `signer: {kid, jwk}`
+              so the receiver can verify the signature (identity self-asserted).
+        agent_card_url: alternative `signer: {agent_card_url}` (section 4.4).
         audit: optional `{level, by, attestation_uri}` block (section 6).
+        max_inline_bytes: limit on the canonical body's byte length in inline mode.
     """
-    if fmt not in FORMATS:
-        raise ValueError(f"unknown trace format {fmt!r}")
+    check_format(fmt)
     if mode not in ext.MODES:
         raise ValueError(f"unknown mode {mode!r}; expected one of {ext.MODES}")
     if mode == "reference" and not uri:
         raise ValueError("reference mode requires a uri")
+    if not isinstance(trace_body, str):
+        raise TypeError("trace_body must be SRML text")
 
     body = trace_body
+    fields: dict[str, Any] = {}
     if redact:
-        if fmt != "srml":
-            raise ValueError("redaction profile is defined for srml bodies only")
-        body = redact_srml(body)
-    if fmt == "json" and isinstance(body, str):
-        body = json.loads(body)
+        body = redact_srml(trace_body)
+        fields["redacted"] = True
+        if full_sha256:
+            fields["full_sha256"] = sha256_of(trace_body)
 
-    digest = sha256_of(body, fmt)
-    validator = run_validator(body, fmt)
+    digest = sha256_of(body)
+    validator = run_validator(body)
     if claims is None:
-        claims = extract_claims(parse_trace(body, fmt)) if validator["ok"] else []
+        claims = extract_claims(parse_trace(body)) if validator["ok"] else []
 
     if mode == "inline":
-        size = len(canonical_bytes(body, fmt))
+        size = len(canonical_bytes(body))
         if size > max_inline_bytes:
             raise ValueError(
-                f"inline trace is {size} bytes, over max_inline_bytes={max_inline_bytes}; use reference mode"
+                f"inline trace is {size} canonical bytes, over max_inline_bytes={max_inline_bytes}; use reference mode"
             )
-        trace: dict[str, Any] = {"mode": "inline", "format": fmt, "body": body}
+        trace: dict[str, Any] = {"mode": "inline", "format": ext.FORMAT, "body": body}
     else:
-        trace = {"mode": "reference", "format": fmt, "uri": uri}
+        trace = {"mode": "reference", "format": ext.FORMAT, "uri": uri}
 
-    fields: dict[str, Any] = {
+    fields = {
         "trace": trace,
         "sha256": digest,
         "parent": [normalize_hash(p) for p in parents],
         "claims": claims,
         "validator": validator,
+        **fields,
     }
     if signer is not None:
         fields["signature"] = signer.sign(digest)
+        if signer_jwk is not None:
+            if "d" in signer_jwk:
+                raise ValueError("signer_jwk must be a public JWK (it has a private 'd' member)")
+            fields["signer"] = {"kid": signer.kid, "jwk": dict(signer_jwk)}
+        elif agent_card_url:
+            fields["signer"] = {"kid": signer.kid, "agent_card_url": agent_card_url}
+    elif signer_jwk is not None or agent_card_url:
+        raise ValueError("signer_jwk / agent_card_url need a signer")
     if audit is not None:
         fields["audit"] = audit
     return Provenance(fields).metadata()

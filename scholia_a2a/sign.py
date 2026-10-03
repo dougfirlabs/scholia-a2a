@@ -1,10 +1,11 @@
-"""Optional Ed25519 JWS (compact serialization) over the trace hash.
+"""Optional Ed25519 JWS (compact serialization) over the trace hash (spec section 4.4).
 
 The JWS payload is `{"sha256": "<hash>", "kid": "<key id>"}`; the protected
 header is `{"alg": "EdDSA", "typ": "JWT", "kid": "<key id>"}`. The public key
-travels as an OKP JWK so it can be published in the sender's Agent Card
-extension params (`public_key_jwk`), which is the identity binding this
-reference implementation chose for the spec's open question in section 8.
+travels as an OKP JWK: a responder publishes it in its Agent Card extension
+params (`public_key_jwk`) or in a JWK Set at `params.jwks_uri`; a requester
+without an Agent Card ships it in the metadata `signer` field, which proves
+integrity but not identity (self-asserted) unless bound out of band.
 """
 
 from __future__ import annotations
@@ -103,6 +104,32 @@ class Ed25519Verifier:
     @classmethod
     def from_jwk(cls, jwk: dict[str, Any]) -> "Ed25519Verifier":
         return cls(public_key=public_key_from_jwk(jwk), kid=jwk.get("kid"))
+
+    @classmethod
+    def from_jwks(cls, jwks: dict[str, Any], kid: str | None = None) -> "Ed25519Verifier":
+        """Pick the Ed25519 key with `kid` (or the only Ed25519 key) out of a JWK Set (`params.jwks_uri`)."""
+        keys = [k for k in jwks.get("keys", []) if k.get("kty") == "OKP" and k.get("crv") == "Ed25519"]
+        if kid is not None:
+            keys = [k for k in keys if k.get("kid") == kid]
+        if len(keys) != 1:
+            raise ValueError(f"JWK Set has {len(keys)} matching Ed25519 keys for kid={kid!r}; need exactly one")
+        return cls.from_jwk(keys[0])
+
+    @classmethod
+    def from_signer_field(cls, signer: dict[str, Any]) -> "Ed25519Verifier":
+        """Verifier for a metadata `signer: {kid, jwk}` field. The result is self-asserted identity."""
+        jwk = signer.get("jwk")
+        if not isinstance(jwk, dict):
+            raise ValueError("signer has no inline jwk (agent_card_url must be resolved by the caller)")
+        if "d" in jwk:
+            raise ValueError("signer.jwk carries a private key member; refusing")
+        kid = signer.get("kid")
+        if kid is not None and jwk.get("kid") not in (None, kid):
+            raise ValueError(f"signer.kid {kid!r} does not match signer.jwk.kid {jwk.get('kid')!r}")
+        v = cls.from_jwk(jwk)
+        if kid is not None:
+            v.kid = kid
+        return v
 
     def verify(self, jws: str, expected_sha256: str) -> tuple[bool, str]:
         """Return (ok, reason). Never raises on malformed input."""

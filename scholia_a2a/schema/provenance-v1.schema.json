@@ -1,26 +1,37 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://scholialang.org/ext/a2a/provenance/v1/schema.json",
-  "title": "Scholia Provenance Extension for A2A, v1 metadata block",
-  "description": "The extension's fields as they appear in an A2A Message or Artifact `metadata` map. Keys are prefixed with the extension URI. Draft 0.1.",
+  "title": "Scholia Provenance Extension for A2A, v1 metadata block (draft 0.2)",
+  "description": "The extension's fields as they appear in an A2A Message's or Artifact's own `metadata` map (not a request-level map). Keys are prefixed with the extension URI. The object carrying this map MUST also list the extension URI in its `extensions` field (spec section 3); that field is outside this schema. Draft 0.2, September 30 2026.",
   "type": "object",
   "properties": {
     "https://scholialang.org/ext/a2a/provenance/v1/trace": { "$ref": "#/$defs/trace" },
     "https://scholialang.org/ext/a2a/provenance/v1/sha256": { "$ref": "#/$defs/hash" },
     "https://scholialang.org/ext/a2a/provenance/v1/parent": {
       "type": "array",
+      "description": "Hashes of the upstream traces this one continues (SHOULD).",
       "items": { "$ref": "#/$defs/hash" },
       "uniqueItems": true
     },
     "https://scholialang.org/ext/a2a/provenance/v1/claims": {
       "type": "array",
+      "description": "Declared Finding -> Evidence dependencies (SHOULD). Each depends_on MUST be a subset of the cited set (section 4.2).",
       "items": { "$ref": "#/$defs/claim" }
     },
     "https://scholialang.org/ext/a2a/provenance/v1/validator": { "$ref": "#/$defs/validator" },
     "https://scholialang.org/ext/a2a/provenance/v1/signature": {
       "type": "string",
-      "description": "JWS compact serialization over the sha256 value.",
+      "description": "Compact JWS (EdDSA / Ed25519) over the sha256 string, with kid in its protected header (MAY, section 4.4).",
       "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+    },
+    "https://scholialang.org/ext/a2a/provenance/v1/signer": { "$ref": "#/$defs/signer" },
+    "https://scholialang.org/ext/a2a/provenance/v1/redacted": {
+      "type": "boolean",
+      "description": "True when the shipped body is redacted (atom kinds, ids and edges kept, content removed). sha256 always covers the shipped body (section 4.3)."
+    },
+    "https://scholialang.org/ext/a2a/provenance/v1/full_sha256": {
+      "$ref": "#/$defs/hash",
+      "description": "Hash of the unredacted body, for later disclosure (MAY, section 4.3)."
     },
     "https://scholialang.org/ext/a2a/provenance/v1/audit": { "$ref": "#/$defs/audit" }
   },
@@ -31,21 +42,24 @@
   "$defs": {
     "hash": {
       "type": "string",
-      "description": "sha256 of the canonical trace body. Preferred form is `sha256:<64 hex>`; bare hex is accepted.",
+      "description": "SHA-256 of the canonical trace body (section 4.1). Senders MUST emit `sha256:` + 64 lowercase hex; receivers SHOULD also accept bare hex from draft-0.1 senders, so the pattern allows both.",
       "pattern": "^(sha256:)?[0-9a-f]{64}$"
+    },
+    "hashEmitted": {
+      "type": "string",
+      "description": "The emitted form only (draft 0.2 senders).",
+      "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "atomId": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_:.\\-]+$" },
     "trace": {
       "type": "object",
+      "description": "v1 defines one format, srml (Scholialang text form). Receivers MUST reject other formats rather than guess.",
       "oneOf": [
         {
           "properties": {
             "mode": { "const": "inline" },
-            "format": { "enum": ["srml", "json"] },
-            "body": {
-              "description": "SRML text when format=srml; a JSON trace object when format=json.",
-              "type": ["string", "object"]
-            }
+            "format": { "const": "srml" },
+            "body": { "type": "string", "description": "SRML text; hashed after canonicalization (section 4.1)." }
           },
           "required": ["mode", "format", "body"],
           "additionalProperties": false
@@ -53,10 +67,10 @@
         {
           "properties": {
             "mode": { "const": "reference" },
-            "format": { "enum": ["srml", "json"] },
+            "format": { "const": "srml" },
             "uri": { "type": "string", "format": "uri" }
           },
-          "required": ["mode", "uri"],
+          "required": ["mode", "format", "uri"],
           "additionalProperties": false
         }
       ]
@@ -72,8 +86,10 @@
     },
     "validator": {
       "type": "object",
+      "description": "The sender's validator run (SHOULD). Advisory: receivers re-run the validator.",
       "properties": {
-        "version": { "type": "string" },
+        "validator_version": { "type": "string", "description": "scholialang validator suite, e.g. 0.7.2" },
+        "grammar_version": { "type": "string", "description": "Scholialang grammar the trace is written in, e.g. 0.6.2" },
         "ok": { "type": "boolean" },
         "errors": {
           "type": "array",
@@ -88,8 +104,38 @@
           }
         }
       },
-      "required": ["version", "ok", "errors"],
+      "required": ["validator_version", "grammar_version", "ok", "errors"],
       "additionalProperties": false
+    },
+    "jwkEd25519Public": {
+      "type": "object",
+      "description": "Ed25519 OKP public JWK. A private member (`d`) is not allowed.",
+      "properties": {
+        "kty": { "const": "OKP" },
+        "crv": { "const": "Ed25519" },
+        "x": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+        "kid": { "type": "string" },
+        "alg": { "const": "EdDSA" },
+        "use": { "type": "string" }
+      },
+      "required": ["kty", "crv", "x"],
+      "not": { "required": ["d"] }
+    },
+    "signer": {
+      "type": "object",
+      "description": "For senders without an Agent Card (MAY, section 4.4): the verification key inline, or where to find the card that publishes it. A self-asserted key proves integrity, not identity.",
+      "oneOf": [
+        {
+          "properties": { "kid": { "type": "string" }, "jwk": { "$ref": "#/$defs/jwkEd25519Public" } },
+          "required": ["kid", "jwk"],
+          "additionalProperties": false
+        },
+        {
+          "properties": { "kid": { "type": "string" }, "agent_card_url": { "type": "string", "format": "uri" } },
+          "required": ["agent_card_url"],
+          "additionalProperties": false
+        }
+      ]
     },
     "audit": {
       "type": "object",
@@ -100,6 +146,29 @@
       },
       "required": ["level"],
       "additionalProperties": true
+    },
+    "agentCardExtensionEntry": {
+      "type": "object",
+      "description": "The Agent Card capabilities.extensions[] entry (section 3). `required` absent reads as false; numeric params may arrive as integral floats (proto3 Struct).",
+      "properties": {
+        "uri": { "const": "https://scholialang.org/ext/a2a/provenance/v1" },
+        "description": { "type": "string" },
+        "required": { "type": "boolean", "default": false },
+        "params": {
+          "type": "object",
+          "properties": {
+            "grammar_version": { "type": "string" },
+            "validator_version": { "type": "string" },
+            "modes": { "type": "array", "items": { "enum": ["inline", "reference"] } },
+            "signing": { "type": "array", "items": { "enum": ["none", "jws"] } },
+            "max_inline_bytes": { "type": "number", "multipleOf": 1, "minimum": 0, "description": "Limit on the canonical body's byte length; integral floats accepted." },
+            "public_key_jwk": { "$ref": "#/$defs/jwkEd25519Public" },
+            "jwks_uri": { "type": "string", "format": "uri" }
+          },
+          "additionalProperties": true
+        }
+      },
+      "required": ["uri"]
     }
   }
 }

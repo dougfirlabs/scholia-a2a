@@ -68,9 +68,10 @@ class ProvenanceGraph:
         preview_chars: int = 110,
         fetch: Any = None,
         verifier: Any = None,
+        extensions: list[str] | None = None,
     ) -> TraceNode:
         if verify is None:
-            verify = verify_provenance(metadata, fetch=fetch, verifier=verifier)
+            verify = verify_provenance(metadata, fetch=fetch, verifier=verifier, extensions=extensions)
         fields = ext.extract(metadata)
         sha = normalize_hash(str(fields.get("sha256", "0" * 64))) if fields.get("sha256") else "sha256:" + "0" * 64
         node = TraceNode(sha256=sha, agent=agent, label=label, verify=verify, metadata=dict(metadata))
@@ -78,9 +79,9 @@ class ProvenanceGraph:
         node.claims = list(fields.get("claims") or [])
         trace = fields.get("trace") or {}
         body = trace.get("body") if trace.get("mode") == "inline" else (fetch(trace["uri"]) if fetch and trace.get("uri") else None)
-        if body is not None:
+        if body is not None and trace.get("format") == ext.FORMAT:
             try:
-                for a in walk_atoms(parse_trace(body, trace.get("format", "srml"))):
+                for a in walk_atoms(parse_trace(body)):
                     if a.kind in ("Branch", "Alternative", "Print"):
                         continue
                     text = " ".join((a.content or "").split())
@@ -227,7 +228,9 @@ def render_html(graph: ProvenanceGraph, title: str = "Scholia provenance graph",
         bcol = "#3fb950" if ok else ("#f85149" if ok is False else "#8b949e")
         svg.append(f'<text x="{x+card_w-14}" y="{y+22}" fill="{bcol}" font-size="11" font-weight="700" text-anchor="end">{badge}</text>')
         svg.append(f'<text x="{x+14}" y="{y+40}" fill="#8b949e" font-size="10.5" font-family="ui-monospace,Menlo,monospace">sha256:{e(_short(n.sha256))}…</text>')
-        sig = n.verify.safe_summary()["signature"] if n.verify else "none"
+        sig = n.verify.signature if n.verify else "none"
+        if n.verify and n.verify.identity:
+            sig += f" ({n.verify.identity})"
         svg.append(f'<text x="{x+14}" y="{y+54}" fill="#8b949e" font-size="10.5">signature: {e(sig)} · validator {e(str(n.verify.validator_version or "") if n.verify else "")}</text>')
         svg.append(f'<text x="{x+14}" y="{y+68}" fill="#c9d1d9" font-size="10.5">{e(n.label[:48])}</text>')
         row_y = {}
@@ -276,7 +279,7 @@ def render_html(graph: ProvenanceGraph, title: str = "Scholia provenance graph",
             "<tr>"
             f"<td><b>{e(n.agent)}</b><br><span class=dim>{e(n.label)}</span></td>"
             f"<td><code>{e(_short(n.sha256))}…</code></td>"
-            + cell(s.get("hash_ok")) + f"<td>{e(str(s.get('signature')))}</td>" + cell(s.get("validator_ok")) + cell(s.get("claims_ok"))
+            + cell(s.get("signalled")) + cell(s.get("hash_ok")) + f"<td>{e(str(s.get('signature_statement')))}</td>" + cell(s.get("validator_ok")) + cell(s.get("claims_ok"))
             + f"<td>{', '.join(e(_short(p)) + '…' for p in n.parents) or '<span class=dim>none (root)</span>'}</td>"
             + (f'<td class="ok">PASS</td>' if (v and v.ok) else '<td class="bad">FAIL</td>')
             + "</tr>"
@@ -297,8 +300,8 @@ def render_html(graph: ProvenanceGraph, title: str = "Scholia provenance graph",
 <div class="scroll">{''.join(svg)}</div>
 <div class="legend">{legend}</div>
 <h2>Verification (L1 structural)</h2>
-<div class="scroll" style="border:0"><table><tr><th>Trace</th><th>sha256</th><th>hash</th><th>signature</th><th>validator</th><th>claims</th><th>parents</th><th>verdict</th></tr>{''.join(rows)}</table></div>
+<div class="scroll" style="border:0"><table><tr><th>Trace</th><th>sha256</th><th>extensions[]</th><th>hash</th><th>signature</th><th>validator</th><th>claims</th><th>parents</th><th>verdict</th></tr>{''.join(rows)}</table></div>
 {'<h2>Checks</h2><div class="scroll" style="border:0"><table><tr><th>Check</th><th>Result</th><th>Detail</th></tr>' + ev_rows + '</table></div>' if graph.events else ''}
 <h2>Raw metadata</h2>{details}
-<div class="foot">Scholia Provenance Extension for A2A, draft 0.1 reference implementation. Trace content shown here is untrusted data, rendered escaped; it is never placed in a model's instruction context by this tool.</div>
+<div class="foot">Scholia Provenance Extension for A2A, draft 0.2 reference implementation. Trace content shown here is untrusted data, rendered escaped; it is never placed in a model's instruction context by this tool.</div>
 </div></body></html>"""
