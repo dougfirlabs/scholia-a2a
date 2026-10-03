@@ -193,7 +193,7 @@ def build(transcript: dict[str, Any], graph_html: str | None, commit: str, graph
         f'<div>required</div><div><code>{e(str(ext_entry.get("required", False)).lower())}</code> <span class=dim>(absent on the wire = false)</span></div>'
         f'<div>max_inline_bytes</div><div><code>{e(str(ext_entry.get("params", {}).get("max_inline_bytes")))}</code> on the wire → <code>{e(str(card_params.get("max_inline_bytes")))}</code> read</div>'
         f'<div>versions</div><div>grammar <code>{e(str(card_params.get("grammar_version")))}</code> · validator <code>{e(str(card_params.get("validator_version")))}</code></div></div>'
-        + checks_table(t["checks"], prefix="card params") + checks_table(t["checks"], ["Agent Card entry is required=false (absent on the wire reads as false)"])
+        + checks_table(t["checks"], ["analyst Agent Card declares the extension", "Agent Card entry is required=false (absent on the wire reads as false)"]) + checks_table(t["checks"], prefix="card params")
         + pre(ext_entry, 40) + f"<details><summary>show the whole Agent Card</summary><pre>{e(json.dumps(card, indent=1))}</pre></details>"))
 
     # 2 Request
@@ -233,7 +233,8 @@ def build(transcript: dict[str, Any], graph_html: str | None, commit: str, graph
         "The analyst answers normally (text plus a data table) and, because the extension is active, its artifact lists the URI in extensions[] and its own metadata carries the reasoning trace: Evidence atoms with polarity, a Finding with a status, the sha256:<hex> hash, the parent link to the planner's trace, the declared claims, the validator record with grammar and validator versions, and a signature. It also reports back what it saw of the planner's provenance: integrity verified, identity self-asserted.",
         f'<h3>Task</h3><div class="kv"><div>state</div><div><code>{e(task.get("status", {}).get("state", ""))}</code></div><div>artifact</div><div>{e(artifact.get("name", ""))} · extensions[] = <code>{e(", ".join(art_exts))}</code></div></div>'
         f'<h3>Answer (text part)</h3><div class="answer">{e(" ".join(p["text"] for p in answer_parts))}</div>'
-        f'<h3>Requester provenance, as the analyst saw it</h3><div class="hl">{badge(bool(seen.get("ok")))} signature <b>{e(str(seen.get("signature")))}</b> · identity <b>{e(str(seen.get("identity")))}</b> · “{e(str(seen.get("signature_statement", "")))}” · signalled {e(str(seen.get("signalled")))}</div>'
+        + checks_table(t["checks"], ["task completed", "artifact has a plain answer"])
+        + f'<h3>Requester provenance, as the analyst saw it</h3><div class="hl">{badge(bool(seen.get("ok")))} signature <b>{e(str(seen.get("signature")))}</b> · identity <b>{e(str(seen.get("identity")))}</b> · “{e(str(seen.get("signature_statement", "")))}” · signalled {e(str(seen.get("signalled")))}</div>'
         + (f'<details><summary>show data parts (comparison table, requester provenance summary)</summary><pre>{e(json.dumps([p["data"] for p in data_parts], indent=1, ensure_ascii=False))}</pre></details>' if data_parts else "")
         + f'<h3>Analyst trace (…/v1/trace, SRML rendered)</h3>{srml_html(trace.get("body", ""))}'
         f'<h3>Provenance fields</h3><div class="kv">'
@@ -284,7 +285,7 @@ def build(transcript: dict[str, Any], graph_html: str | None, commit: str, graph
         )
     sections.append(step(6, "Tamper tests: a FAIL here is the good outcome",
         "Four altered copies of the real artifact are verified again; each must fail, and the table shows which layer catches it: the hash binds content, the signature binds the hash to the analyst's key, the claims check binds the declared dependencies to the trace, and the in-band signal check refuses provenance keys that are not announced in extensions[].",
-        "".join(tamper_rows)))
+        "".join(tamper_rows) + checks_table(t["checks"], prefix="TAMPER")))
 
     # 7 Rules
     rules = t.get("rules", {})

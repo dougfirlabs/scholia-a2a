@@ -63,5 +63,6 @@ def test_walkthrough_builds_clean_from_a_real_run(tmp_path):
     assert "identity self-asserted" in page and "TAMPER 4" in page and "RULE: claims strict subset" in page and "RULE: format other than srml" in page
     assert "draft 0.2" in page and "\"scholia_version\"" not in page  # the old param is gone from every JSON block
     # Every check name from the run appears on the page somewhere.
+    import html
     for c in res["checks"]:
-        assert c["name"].split(" (")[0] in page, c["name"]
+        assert html.escape(c["name"].split(" (")[0]) in page, c["name"]
