@@ -3,7 +3,8 @@
 a2a-sdk 1.2.1 parses the inbound `A2A-Extensions` header into
 `RequestContext.requested_extensions`, but does not echo activated
 extensions back on the response. `ExtensionEchoMiddleware` adds that echo
-(spec section 3: "the agent echoes it back if activated").
+(spec 0.2 section 3: an agent SHOULD echo the URIs it activated; clients
+MUST NOT depend on observing it, and the demo client does not).
 """
 
 from __future__ import annotations
@@ -84,7 +85,7 @@ def make_card(
     return AgentCard(
         name=name,
         description=description,
-        version="0.1.0",
+        version="0.2.0",
         provider=AgentProvider(organization="Doug Fir Labs (demo)", url="https://scholialang.org"),
         documentation_url="https://scholialang.org/ext/a2a/provenance/v1",
         supported_interfaces=[

@@ -26,7 +26,14 @@ from scholia_a2a.graph import KIND_COLORS, POLARITY_COLORS  # noqa: E402
 
 e = html.escape
 STATUS_COLORS = {"met": "#3fb950", "unmet": "#d29922", "partially_met": "#d29922"}
-SECRET_PATTERNS = ('"d":', "PRIVATE", "BEGIN")
+# Private-key material must never reach a served page or transcript: a JWK `d` member
+# (Ed25519 private scalar), PEM armour, or a raw urlsafe-b64 32-byte scalar after "d=".
+SECRET_PATTERNS = {
+    "jwk-private-member": re.compile(r'"d"\s*:'),
+    "pem-armour": re.compile(r"-----BEGIN"),
+    "private-key-text": re.compile(r"PRIVATE KEY"),  # PEM header form; prose may say "private key"
+    "d-equals-scalar": re.compile(r"\bd=[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"),
+}
 
 
 def short(h: str | None, n: int = 12) -> str:
@@ -178,47 +185,59 @@ def build(transcript: dict[str, Any], graph_html: str | None, commit: str, graph
     sections: list[str] = []
 
     # 1 Discovery
+    card_params = t.get("analyst_card_params") or {}
     sections.append(step(1, "Discovery: the analyst's Agent Card",
-        "The planner fetches the analyst's Agent Card and finds the provenance extension listed under capabilities.extensions, marked optional, with the analyst's public verification key.",
+        "The planner fetches the analyst's Agent Card and finds the provenance extension listed under capabilities.extensions, marked optional, with grammar and validator versions and the analyst's public verification key. The wire form omits required (proto3 default) and serialises max_inline_bytes as 65536.0; the receiver reads both tolerantly.",
         f'<div class="kv"><div>GET</div><div><code>{e(t["analyst_url"])}/.well-known/agent-card.json</code></div>'
         f'<div>agent</div><div>{e(card.get("name", ""))} · {e(card.get("description", ""))}</div>'
-        f'<div>required</div><div><code>{e(str(ext_entry.get("required", False)).lower())}</code> <span class=dim>(absent on the wire = false; proto3 omits defaults)</span></div></div>'
+        f'<div>required</div><div><code>{e(str(ext_entry.get("required", False)).lower())}</code> <span class=dim>(absent on the wire = false)</span></div>'
+        f'<div>max_inline_bytes</div><div><code>{e(str(ext_entry.get("params", {}).get("max_inline_bytes")))}</code> on the wire → <code>{e(str(card_params.get("max_inline_bytes")))}</code> read</div>'
+        f'<div>versions</div><div>grammar <code>{e(str(card_params.get("grammar_version")))}</code> · validator <code>{e(str(card_params.get("validator_version")))}</code></div></div>'
+        + checks_table(t["checks"], prefix="card params") + checks_table(t["checks"], ["Agent Card entry is required=false (absent on the wire reads as false)"])
         + pre(ext_entry, 40) + f"<details><summary>show the whole Agent Card</summary><pre>{e(json.dumps(card, indent=1))}</pre></details>"))
 
     # 2 Request
     req_body = req_meta[KEYS["trace"]]["body"]
     hdrs = req.get("http_headers", {})
     hdr_html = "".join(f"<div><b>{e(k)}:</b> {e(val)}</div>" for k, val in hdrs.items()) or "<div class=dim>(none recorded)</div>"
+    signer_field = req_meta.get(KEYS["signer"], {})
     sections.append(step(2, "Request: planner → analyst (message/send)",
-        "The planner activates the extension with the A2A-Extensions HTTP header, lists the URI in Message.extensions, and attaches its own Goal / Constraint / Deciding trace in the message metadata so the analyst can link back to it.",
-        f'<h3>HTTP request headers (added by the planner)</h3><div class="hdr">{hdr_html}<div class=dim>A2A-Version: 1.0 and Content-Type are added by the SDK · JSON-RPC method <b>{e(req.get("jsonrpc_method", "SendMessage"))}</b></div></div>'
+        "The planner lists the extension URI in Message.extensions (the authoritative in-band signal), attaches its Goal / Constraint / Deciding trace in the message's own metadata map, signs the hash with an ephemeral Ed25519 key and ships the public half as signer {kid, jwk} because a requester has no Agent Card. It also sends the A2A-Extensions header, which the spec allows but nobody relies on.",
         f'<h3>Message</h3><div class="kv"><div>role</div><div><code>{e(msg.get("role", ""))}</code></div>'
         f'<div>text</div><div>“{e(" ".join(p.get("text", "") for p in msg.get("parts", [])))}”</div>'
-        f'<div>extensions[]</div><div><code>{e(", ".join(msg.get("extensions", [])))}</code></div>'
-        f'<div>metadata sha256</div><div><code>{e(planner_hash)}</code></div></div>'
+        f'<div>extensions[]</div><div><code>{e(", ".join(msg.get("extensions", [])))}</code> <span class=dim>← in-band signal (MUST)</span></div>'
+        f'<div>metadata sha256</div><div><code>{e(planner_hash)}</code></div>'
+        f'<div>signer</div><div><code>kid={e(str(signer_field.get("kid", "")))}</code> · jwk <code>{e(str(signer_field.get("jwk", {}).get("kty", "")))}/{e(str(signer_field.get("jwk", {}).get("crv", "")))}</code> x=<code>{e(str(signer_field.get("jwk", {}).get("x", ""))[:16])}…</code> <span class=dim>(public key only; the private key never leaves the planner process)</span></div></div>'
+        f'<h3>HTTP request headers (added by the planner)</h3><div class="hdr">{hdr_html}<div class=dim>A2A-Version: 1.0 and Content-Type are added by the SDK · JSON-RPC method <b>{e(req.get("jsonrpc_method", "SendMessage"))}</b></div></div>'
         f'<h3>Planner trace (metadata …/v1/trace, SRML rendered)</h3>{srml_html(req_body)}'
-        f'<h3>Message metadata (trimmed)</h3>{pre(trim_meta(req_meta), 30)}'
-        f'<details><summary>show full message as sent (JSON)</summary><pre>{e(json.dumps(msg, indent=1, ensure_ascii=False))}</pre></details>'))
+        f'<h3>Message metadata (trimmed)</h3>{pre(trim_meta(req_meta), 34)}'
+        + checks_table(t["checks"], ["planner trace validates (scholialang)", "planner signs its trace; signer {kid, jwk} attached (no private material)"])
+        + f'<details><summary>show full message as sent (JSON)</summary><pre>{e(json.dumps(msg, indent=1, ensure_ascii=False))}</pre></details>'))
 
-    # 3 Activation
+    # 3 Signal and echo
     echo = t.get("echo_header")
-    sections.append(step(3, "Activation: the analyst echoes the header",
-        "The analyst confirms activation by echoing the extension URI back in its own A2A-Extensions response header; a plain agent would simply not echo it.",
-        f'<div class="hdr"><div><b>A2A-Extensions:</b> {e(str(echo))}</div></div>'
-        + (f'<p class="dim" style="font-size:.84rem">{badge(checks["A2A-Extensions header echoed by analyst"]["ok"])} {e(checks["A2A-Extensions header echoed by analyst"]["detail"])}</p>' if "A2A-Extensions header echoed by analyst" in checks else "")
-        + '<p class="dim" style="font-size:.84rem">a2a-sdk 1.2.1 does not echo this itself; the demo adds ASGI middleware. The SDK client cannot see response headers, so this is captured with a direct probe.</p>'))
+    art_exts = t.get("artifact_extensions") or artifact.get("extensions", [])
+    sections.append(step(3, "Signal: extensions[] is authoritative; the header echo is only a courtesy",
+        "Draft 0.2 moved the activation signal in-band: every Message or Artifact that carries provenance keys must list the extension URI in its own extensions field, and receivers decide presence from that field. The analyst still echoes the A2A-Extensions header (a SHOULD), observed here with a raw probe because the SDK client cannot see response headers; the planner's verification never consults it.",
+        f'<div class="kv"><div>Message.extensions</div><div><code>{e(", ".join(msg.get("extensions", [])))}</code></div>'
+        f'<div>Artifact.extensions</div><div><code>{e(", ".join(art_exts))}</code></div>'
+        f'<div>echo header</div><div><code>A2A-Extensions: {e(str(echo))}</code> <span class=dim>(SHOULD; not relied on)</span></div></div>'
+        + checks_table(t["checks"], ["artifact lists the extension URI in its extensions[] (in-band signal)", "analyst echoes A2A-Extensions (SHOULD; observed, not relied on)"])))
 
     # 4 Response
     f = {k.replace(EXTENSION_URI + "/", ""): val for k, val in art_meta.items() if k.startswith(EXTENSION_URI)}
     trace = f.get("trace", {})
     sig = f.get("signature", "")
+    seen = t.get("requester_provenance_as_seen_by_analyst") or {}
     sections.append(step(4, "Response: the analyst's artifact with provenance",
-        "The analyst answers normally (text plus a data table) and, because the extension is active, its artifact metadata carries the reasoning trace: Evidence atoms with polarity, a Finding with a status, the hash, the parent link to the planner's trace, the declared claims, the validator record and a signature.",
-        f'<h3>Task</h3><div class="kv"><div>state</div><div><code>{e(task.get("status", {}).get("state", ""))}</code></div><div>artifact</div><div>{e(artifact.get("name", ""))} · extensions[] = <code>{e(", ".join(artifact.get("extensions", [])))}</code></div></div>'
+        "The analyst answers normally (text plus a data table) and, because the extension is active, its artifact lists the URI in extensions[] and its own metadata carries the reasoning trace: Evidence atoms with polarity, a Finding with a status, the sha256:<hex> hash, the parent link to the planner's trace, the declared claims, the validator record with grammar and validator versions, and a signature. It also reports back what it saw of the planner's provenance: integrity verified, identity self-asserted.",
+        f'<h3>Task</h3><div class="kv"><div>state</div><div><code>{e(task.get("status", {}).get("state", ""))}</code></div><div>artifact</div><div>{e(artifact.get("name", ""))} · extensions[] = <code>{e(", ".join(art_exts))}</code></div></div>'
         f'<h3>Answer (text part)</h3><div class="answer">{e(" ".join(p["text"] for p in answer_parts))}</div>'
+        f'<h3>Requester provenance, as the analyst saw it</h3><div class="hl">{badge(bool(seen.get("ok")))} signature <b>{e(str(seen.get("signature")))}</b> · identity <b>{e(str(seen.get("identity")))}</b> · “{e(str(seen.get("signature_statement", "")))}” · signalled {e(str(seen.get("signalled")))}</div>'
         + (f'<details><summary>show data parts (comparison table, requester provenance summary)</summary><pre>{e(json.dumps([p["data"] for p in data_parts], indent=1, ensure_ascii=False))}</pre></details>' if data_parts else "")
         + f'<h3>Analyst trace (…/v1/trace, SRML rendered)</h3>{srml_html(trace.get("body", ""))}'
         f'<h3>Provenance fields</h3><div class="kv">'
+        f'<div>trace.format</div><div><code>{e(str(trace.get("format")))}</code> <span class=dim>(the only v1 format)</span></div>'
         f'<div>sha256</div><div><code>{e(f.get("sha256", ""))}</code></div>'
         f'<div>parent</div><div><code>{e(", ".join(f.get("parent", [])))}</code> <span class=dim>= planner trace hash</span></div>'
         f'<div>claims</div><div><code>{e(json.dumps(f.get("claims", [])))}</code></div>'
@@ -228,47 +247,82 @@ def build(transcript: dict[str, Any], graph_html: str | None, commit: str, graph
         f'<details><summary>show full artifact (JSON)</summary><pre>{e(json.dumps(artifact, indent=1, ensure_ascii=False))}</pre></details>'))
 
     # 5 Verification
-    ver_names = ["sha256 matches canonical trace", "JWS signature verifies against card JWK", "analyst trace validates (re-run locally)",
-                 "declared claims consistent with trace", "parent links to planner trace hash", "evidence carries supports/refutes polarity", "L1 verification PASS"]
-    sections.append(step(5, "Verification: the planner checks everything itself",
-        "The planner re-derives the hash from the trace, checks the signature with the key from the Agent Card, re-runs the scholialang validator, checks that the declared claims match what the trace actually cites, and confirms the parent link; all of that is audit level L1 (structural).",
+    ver_names = [c["name"] for c in t["checks"] if c["name"] in {
+        "artifact carries provenance keys in its own metadata map", "trace format is srml", "sha256 (sha256:<hex> form) matches canonical trace",
+        "JWS signature verifies against the card JWK (identity: agent-card)", "analyst trace validates (re-run locally)",
+        "validator record carries validator_version and grammar_version", "declared claims consistent with the cited set (REFER ∪ shared hypothesis)",
+        "parent links to planner trace hash", "evidence carries supports/refutes polarity",
+        "requester signature verified by analyst via signer (integrity verified, identity self-asserted)", "L1 verification PASS",
+    } or c["name"].startswith("inline body within max_inline_bytes")]
+    sections.append(step(5, "Verification: the planner checks everything itself, in the spec's order",
+        "In-band signal, format, canonical hash, signature with the key from the Agent Card, validator re-run, then claims against the cited set (inline REFER union shared hypothesis). The analyst did the same for the planner's trace using the inline signer key. All of that is audit level L1 (structural).",
         checks_table(t["checks"], ver_names)
-        + f'<div class="hl">L1 result: {badge(v.get("ok", False))} · signature <b>{e(v.get("signature", ""))}</b> · validator {e(v.get("validator_version", ""))} · atoms {e(json.dumps(v.get("atoms", {}).get("kinds", {})))} · polarity {e(json.dumps(v.get("atoms", {}).get("evidence_polarity", {})))}</div>'
+        + f'<div class="hl">L1 result: {badge(v.get("ok", False))} · signature <b>{e(v.get("signature_statement", v.get("signature", "")))}</b> · validator {e(v.get("validator_version", ""))} / grammar {e(v.get("grammar_version", ""))} · atoms {e(json.dumps(v.get("atoms", {}).get("kinds", {})))} · polarity {e(json.dumps(v.get("atoms", {}).get("evidence_polarity", {})))}</div>'
         f'<details><summary>show verifier output (safe summary, no trace text)</summary><pre>{e(json.dumps(v, indent=1))}</pre></details>'))
 
     # 6 Tamper
     tam = t.get("tamper", {})
     changes = t.get("tamper_changes", {})
     tamper_rows = []
-    for key_, label, caught in (("flip_polarity", "TAMPER 1: flip one Evidence polarity", "hash check"), ("flip_and_rehash", "TAMPER 2: flip and re-hash", "signature check"), ("bad_claim", "TAMPER 3: claim an uncited dependency", "claims check")):
+    for key_, label, caught in (
+        ("flip_polarity", "TAMPER 1: flip one Evidence polarity", "hash check"),
+        ("flip_and_rehash", "TAMPER 2: flip and re-hash", "signature check"),
+        ("bad_claim", "TAMPER 3: claim an uncited dependency (superset)", "claims check"),
+        ("drop_extensions", "TAMPER 4: strip extensions[] but keep the keys", "in-band signal check"),
+    ):
         r = tam.get(key_, {})
         tamper_rows.append(
             f'<div class="step" style="margin:.6rem 0;padding-top:.8rem"><h2 style="font-size:1rem">{e(label)}</h2>'
             f'<p class="why">{e(changes.get(key_, ""))}</p>'
             f'<div class="kv"><div>verdict</div><div>{badge(r.get("ok", True), good_when_false=True)}</div>'
             f'<div>caught by</div><div><b>{e(caught)}</b></div>'
+            f'<div>signalled</div><div class="{"ok" if r.get("signalled") else "bad"}">{e(str(r.get("signalled")))}</div>'
             f'<div>hash_ok</div><div class="{"ok" if r.get("hash_ok") else "bad"}">{e(str(r.get("hash_ok")))}</div>'
             f'<div>signature</div><div class="{"ok" if r.get("signature") == "verified" else "bad"}">{e(str(r.get("signature")))}</div>'
             f'<div>claims_ok</div><div class="{"ok" if r.get("claims_ok") else "bad"}">{e(str(r.get("claims_ok")))}</div>'
             f'<div>errors</div><div class=dim>{e("; ".join(r.get("errors", []))[:300])}</div></div></div>'
         )
     sections.append(step(6, "Tamper tests: a FAIL here is the good outcome",
-        "Three altered copies of the real artifact metadata are verified again; each must fail, and the table shows which layer catches it: the hash binds content, the signature binds the hash to the analyst's key, and the claims check binds the declared dependencies to the trace.",
+        "Four altered copies of the real artifact are verified again; each must fail, and the table shows which layer catches it: the hash binds content, the signature binds the hash to the analyst's key, the claims check binds the declared dependencies to the trace, and the in-band signal check refuses provenance keys that are not announced in extensions[].",
         "".join(tamper_rows)))
 
-    # 7 Compatibility
+    # 7 Rules
+    rules = t.get("rules", {})
+    rchanges = t.get("rule_changes", {})
+    rule_rows = []
+    for key_, label, expect in (
+        ("claims_subset", "RULE: claims strict subset → PASS with a warning", "verifies; warning lists the omitted evidence"),
+        ("format_json", "RULE: format other than srml → rejected", "fails before hashing; never guessed"),
+    ):
+        r = rules.get(key_, {})
+        rule_rows.append(
+            f'<div class="step" style="margin:.6rem 0;padding-top:.8rem"><h2 style="font-size:1rem">{e(label)}</h2>'
+            f'<p class="why">{e(rchanges.get(key_, ""))}</p>'
+            f'<div class="kv"><div>verdict</div><div>{badge(bool(r.get("ok")))} <span class=dim>expected: {e(expect)}</span></div>'
+            f'<div>format</div><div><code>{e(str(r.get("format")))}</code></div>'
+            f'<div>claims_ok</div><div class="{"ok" if r.get("claims_ok") else "bad"}">{e(str(r.get("claims_ok")))}</div>'
+            f'<div>warnings</div><div class=dim>{e("; ".join(r.get("warnings", []))[:300]) or "none"}</div>'
+            f'<div>errors</div><div class=dim>{e("; ".join(r.get("errors", []))[:300]) or "none"}</div></div></div>'
+        )
+    sections.append(step(7, "Rules: subset claims warn, unknown formats are rejected",
+        "Two behaviours draft 0.2 pins down that are not tampering. Declaring fewer dependencies than the trace cites is honest under-claiming, so it passes with a warning; declaring more is a failure (tamper test 3). And since v1 defines exactly one trace format, anything else is rejected rather than parsed on a guess.",
+        "".join(rule_rows) + checks_table(t["checks"], prefix="RULE:")))
+
+    # 8 Compatibility
     pc = t.get("plain_client", {})
-    sections.append(step(7, "Compatibility: a client that never heard of the extension",
-        "The same question sent without the header or any metadata gets the same normal answer and no provenance block, which is what required=false promises.",
+    sections.append(step(8, "Compatibility: a client that never heard of the extension",
+        "The same question sent without the header, without extensions[] and without metadata gets the same normal answer, an artifact with no extensions[] entry and no provenance block, which is what required=false promises.",
         f'<div class="kv"><div>header</div><div><span class=dim>(no A2A-Extensions)</span></div><div>state</div><div><code>{e(str(pc.get("state")))}</code></div>'
         f'<div>answer</div><div class="answer">{e(str(pc.get("answer", "")))}</div>'
+        f'<div>artifact extensions[]</div><div><code>{e(json.dumps(pc.get("extensions", [])))}</code></div>'
         f'<div>metadata keys</div><div><code>{e(json.dumps(pc.get("metadata_keys", [])))}</code></div>'
         f'<div>has provenance</div><div><code>{e(str(pc.get("has_provenance")).lower())}</code></div></div>'
         + checks_table(t["checks"], prefix="plain client")))
 
-    # 8 Closing
+    # 9 Closing
     cf = {k.replace(EXTENSION_URI + "/", ""): val for k, val in closing_meta.items() if k.startswith(EXTENSION_URI)}
     closing_body = cf.get("trace", {}).get("body", "")
+    pav = t.get("planner_agent_verification") or {}
     chain = f'<div class="hl">planner request <code>{e(short(planner_hash))}</code> ← analyst <code>{e(short(analyst_hash))}</code> ← planner closing <code>{e(short(cf.get("sha256")))}</code></div>'
     graph_block = ""
     if graph_html:
@@ -276,10 +330,12 @@ def build(transcript: dict[str, Any], graph_html: str | None, commit: str, graph
         if m:
             graph_block = f'<h3>Provenance graph</h3><div class="graphwrap">{m.group(0)}</div>'
     graph_block += f'<p><a href="{e(graph_link)}">Open the full provenance graph page →</a></p>'
-    sections.append(step(8, "Closing: the planner as an A2A agent",
-        "A third party asks the planner over A2A; the planner delegates to the analyst, verifies the result, and returns its own closing trace (Goal → Finding → Concluding) whose parent is the analyst's hash, so the whole delegation is one hash-linked graph.",
+    sections.append(step(9, "Closing: the planner as an A2A agent",
+        "A third party asks the planner over A2A; the planner delegates to the analyst, verifies the result, and returns its own closing trace (Goal → Finding → Concluding) whose parent is the analyst's hash. Here the planner is a responder, so its Agent Card publishes its public key and the closing artifact's signature verifies against it; the whole delegation is one hash-linked graph.",
         f'<div class="kv"><div>state</div><div><code>{e(closing_task.get("status", {}).get("state", ""))}</code></div>'
-        f'<div>parent</div><div><code>{e(", ".join(cf.get("parent", [])))}</code> <span class=dim>= analyst trace hash</span></div></div>'
+        f'<div>extensions[]</div><div><code>{e(", ".join(closing_art.get("extensions", [])))}</code></div>'
+        f'<div>parent</div><div><code>{e(", ".join(cf.get("parent", [])))}</code> <span class=dim>= analyst trace hash</span></div>'
+        f'<div>signature</div><div><b>{e(str(pav.get("signature_statement", pav.get("signature", ""))))}</b></div></div>'
         + chain + checks_table(t["checks"], prefix="planner ")
         + (f'<h3>Closing trace (SRML rendered)</h3>{srml_html(closing_body)}' if closing_body else "")
         + f'<details><summary>show closing artifact metadata</summary><pre>{e(json.dumps(closing_meta, indent=1, ensure_ascii=False))}</pre></details>'
@@ -287,14 +343,14 @@ def build(transcript: dict[str, Any], graph_html: str | None, commit: str, graph
 
     total = len(t["checks"])
     passed = sum(1 for c in t["checks"] if c["ok"])
-    toc = "".join(f'<a href="#s{i}">{i}. {n}</a>' for i, n in enumerate(["Discovery", "Request", "Activation", "Response", "Verification", "Tamper", "Compatibility", "Closing"], 1))
+    toc = "".join(f'<a href="#s{i}">{i}. {n}</a>' for i, n in enumerate(["Discovery", "Request", "Signal", "Response", "Verification", "Tamper", "Rules", "Compatibility", "Closing"], 1))
     stamp = time.strftime("%Y-%m-%d %H:%M %Z")
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Scholia A2A walkthrough</title><style>{CSS}</style></head><body>
-<div class="banner"><b>Reference implementation of Scholia Provenance for A2A — draft.</b> Spec: <a href="{EXTENSION_URI}">{EXTENSION_URI}</a></div>
+<div class="banner"><b>Reference implementation of Scholia Provenance for A2A — spec draft 0.2.</b> Spec: <a href="{EXTENSION_URI}">{EXTENSION_URI}</a></div>
 <div class="wrap">
 <h1>See it in action: provenance across two A2A agents</h1>
-<div class="sub">Generated from the real demo run · question “{e(t.get("question", ""))}” · {passed}/{total} checks passed · a2a-sdk 1.2.1 · scholialang 0.7.2</div>
+<div class="sub">Generated from the real demo run · question “{e(t.get("question", ""))}” · {passed}/{total} checks passed · a2a-sdk 1.2.1 · grammar 0.6.2 · validator 0.7.2 · keys ephemeral, public halves only</div>
 <div class="toc">{toc}</div>
 {''.join(sections)}
 <div class="foot">scholia-a2a commit {e(commit)} · generated {e(stamp)} · demo transcript {e(os.path.basename(t.get("_path", "transcript.json")))} · tailnet-only demo page, not public</div>
@@ -311,7 +367,22 @@ def _b64json(seg: str) -> str:
 
 
 def scan_secrets(text: str) -> list[str]:
-    return [p for p in SECRET_PATTERNS if p in text]
+    """Names of secret-like patterns found in `text` (empty list = clean)."""
+    return [name for name, rx in SECRET_PATTERNS.items() if rx.search(text)]
+
+
+def scan_json_for_private_jwk(obj: Any, path: str = "$") -> list[str]:
+    """Paths of any JWK-looking object (kty present) that carries a private member."""
+    hits: list[str] = []
+    if isinstance(obj, dict):
+        if "kty" in obj and any(k in obj for k in ("d", "p", "q", "dp", "dq", "qi", "k")):
+            hits.append(path)
+        for k, v in obj.items():
+            hits += scan_json_for_private_jwk(v, f"{path}.{k}")
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            hits += scan_json_for_private_jwk(v, f"{path}[{i}]")
+    return hits
 
 
 def main() -> int:
@@ -330,13 +401,19 @@ def main() -> int:
     except Exception:
         commit = "unknown"
     page = build(transcript, graph_html, commit, a.graph_link)
-    hits = scan_secrets(page)
+    # Scan everything that will be served or published: the page, the graph, and the transcript
+    # (text and structure, so a private JWK member is caught whichever key it belongs to:
+    # the analyst's card key, the planner's card key or the planner's requester `signer` key).
+    hits = [f"page:{h}" for h in scan_secrets(page)]
+    hits += [f"graph:{h}" for h in scan_secrets(graph_html or "")]
+    hits += [f"transcript:{h}" for h in scan_secrets(open(a.transcript, encoding="utf-8").read())]
+    hits += [f"transcript-jwk:{h}" for h in scan_json_for_private_jwk(transcript)]
     if hits:
         print(f"REFUSING to write {a.out}: secret-like patterns found: {hits}", file=sys.stderr)
         return 2
     with open(a.out, "w", encoding="utf-8") as fh:
         fh.write(page)
-    print(f"wrote {a.out} ({len(page)} bytes), commit {commit}, secret scan clean")
+    print(f"wrote {a.out} ({len(page)} bytes), commit {commit}, secret scan clean (page, graph, transcript)")
     return 0
 
 

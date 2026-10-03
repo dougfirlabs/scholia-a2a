@@ -33,8 +33,9 @@ async def ask(url: str, question: str) -> dict:
     return {
         "state": (task.get("status") or {}).get("state"),
         "answer": text,
-        "has_provenance": has_provenance(art.get("metadata") or {}),
+        "has_provenance": has_provenance(art.get("metadata") or {}, art.get("extensions") or []),
         "metadata_keys": sorted(art.get("metadata") or {}),
+        "extensions": list(art.get("extensions") or []),
     }
 
 

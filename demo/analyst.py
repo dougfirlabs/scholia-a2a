@@ -2,10 +2,15 @@
 
 The Agent Card declares the Scholia provenance extension (required=false)
 and publishes the analyst's Ed25519 public key as `params.public_key_jwk`.
-When a client activates the extension, the returned Artifact's metadata
-carries a validated, signed Scholia trace whose `parent` is the sha256 of
-the requester's trace from the inbound message metadata. Without
-activation the same answer is returned with no extension data.
+When a client activates the extension (A2A-Extensions header, or in-band by
+listing the URI in Message.extensions with provenance keys attached), the
+returned Artifact lists the URI in its own `extensions` field and its
+metadata carries a validated, signed Scholia trace whose `parent` is the
+sha256 of the requester's trace. Inbound provenance is detected from the
+Message's own `extensions` field (spec 0.2 section 3), never from the HTTP
+header, and a requester signature is checked against the `signer` field:
+integrity verified, identity self-asserted. Without activation the same
+answer is returned with no extension data.
 
 Generation is deterministic (no LLM). `--llm` optionally rewrites only the
 prose summary with `claude -p`; the trace is never LLM-generated here.
@@ -20,8 +25,6 @@ import subprocess
 import sys
 from typing import Any
 
-from google.protobuf.json_format import MessageToDict
-
 from a2a.helpers.proto_helpers import get_message_text, new_data_part, new_task_from_user_message, new_text_part
 from a2a.server.agent_execution.agent_executor import AgentExecutor
 from a2a.server.agent_execution.context import RequestContext
@@ -30,7 +33,7 @@ from a2a.server.tasks.task_updater import TaskUpdater
 from a2a.types.a2a_pb2 import AgentSkill
 
 from demo.common import ANALYST_PORT, make_app, make_card, serve
-from scholia_a2a import EXTENSION_URI, Ed25519Signer, build_provenance, extract, is_activated, verify_provenance
+from scholia_a2a import EXTENSION_URI, Ed25519Signer, build_provenance, is_activated, is_signalled, provenance_from, verify_provenance
 
 # A tiny, fixed knowledge table so the demo is deterministic and offline.
 FACTS: dict[str, dict[str, Any]] = {
@@ -126,18 +129,20 @@ class AnalystExecutor(AgentExecutor):
         text = get_message_text(context.message) if context.message else ""
         x, y = parse_subjects(text)
         trace, table = build_trace(x, y)
-        activated = is_activated(context.requested_extensions)
+        # The Message's own metadata map and extensions field (never the request-level map).
+        msg_meta, msg_exts = provenance_from(context.message) if context.message is not None else ({}, [])
+        # Activation: the header (MAY) or an in-band signalled request; the echo is never consulted.
+        activated = is_activated(context.requested_extensions) or is_signalled(msg_exts)
 
         parents: list[str] = []
         inbound: dict[str, Any] | None = None
-        if activated and context.message is not None:
-            msg_meta = MessageToDict(context.message.metadata)
-            inbound_fields = extract(msg_meta)
-            if inbound_fields:
-                # Untrusted data: verified structurally, summarized, never interpreted.
-                v = verify_provenance(msg_meta)
+        if activated and (is_signalled(msg_exts) or msg_meta):
+            # Untrusted data: verified structurally (in-band signal, format, hash, signature via
+            # `signer`, validator re-run, claims), summarized, never interpreted.
+            v = verify_provenance(msg_meta, extensions=msg_exts)
+            if v.present or v.signalled:
                 inbound = v.safe_summary()
-                if v.hash_ok:
+                if v.hash_ok and v.format_ok:
                     parents.append(v.sha256 or "")
                 # A mismatch is reported in the answer, never silently dropped.
 
@@ -148,10 +153,11 @@ class AnalystExecutor(AgentExecutor):
         parts = [new_text_part(summary, media_type="text/plain"), new_data_part(table, media_type="application/json")]
         metadata: dict[str, Any] | None = None
         if activated:
-            metadata = build_provenance(trace, fmt="srml", parents=parents, signer=self.signer)
+            metadata = build_provenance(trace, parents=parents, signer=self.signer)
             if inbound is not None:
                 parts.append(new_data_part({"requester_provenance": inbound}, media_type="application/json"))
-        await updater.add_artifact(parts, name="comparison", metadata=metadata, extensions=[EXTENSION_URI] if activated else None)
+        # In-band signal (MUST): the artifact lists the URI in its own extensions field whenever keys are present.
+        await updater.add_artifact(parts, name="comparison", metadata=metadata, extensions=[EXTENSION_URI] if metadata else None)
         await updater.complete()
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
