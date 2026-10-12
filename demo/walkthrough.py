@@ -354,7 +354,7 @@ def build(transcript: dict[str, Any], graph_html: str | None, commit: str, graph
 <div class="sub">Generated from the real demo run · question “{e(t.get("question", ""))}” · {passed}/{total} checks passed · a2a-sdk 1.2.1 · grammar 0.6.2 · validator 0.7.2 · keys ephemeral, public halves only</div>
 <div class="toc">{toc}</div>
 {''.join(sections)}
-<div class="foot">scholia-a2a commit {e(commit)} · generated {e(stamp)} · demo transcript {e(os.path.basename(t.get("_path", "transcript.json")))} · tailnet-only demo page, not public</div>
+<div class="foot">scholia-a2a commit {e(commit)} · generated {e(stamp)} · demo transcript {e(os.path.basename(t.get("_path", "transcript.json")))} · generated demo page</div>
 </div></body></html>"""
 
 

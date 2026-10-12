@@ -13,7 +13,7 @@ Finding → Evidence `claims`, and `parent` hash links let a receiver verify the
 and delegated agents into one provenance graph.
 
 Built against `a2a-sdk==1.2.1` (A2A protocol 1.0, protobuf types) and `scholialang==0.7.2` (grammar 0.6.2).
-Private repository; nothing here is published.
+Public source for the draft; not on PyPI. Install from a clone (below). Licensed under Apache-2.0 (see `LICENSE`).
 
 ## Quickstart
 
@@ -202,5 +202,11 @@ on it. 5. Serialization tolerance (absent `required`, integral floats). 6. Ident
 
 ## Status
 
-Draft 0.2 reference implementation, October 3 2026 (0.1: September 30 2026). Private repository. Feedback:
-darren@dougfirlabs.com.
+Draft 0.2 reference implementation, October 3 2026 (0.1: September 30 2026). Published as the public reference
+implementation for the draft community extension; the spec and this code may still change before a non-draft release.
+Feedback: darren@dougfirlabs.com, or open an issue.
+
+## License
+
+Apache License 2.0; see `LICENSE`. This covers the code, schema, demo and this README. The spec text at
+https://scholialang.org/ext/a2a/provenance/v1 is licensed separately, under the scholialang.org site's terms.
