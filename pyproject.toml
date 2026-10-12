@@ -2,11 +2,18 @@
 name = "scholia-a2a"
 version = "0.2.0"
 description = "Reference implementation of the Scholia Provenance Extension for A2A (draft 0.2)"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = ["a2a-sdk[http-server]==1.2.1", "scholialang==0.7.2", "cryptography", "jsonschema", "httpx", "uvicorn", "starlette"]
 
 [project.optional-dependencies]
 test = ["pytest", "pytest-asyncio"]
+
+[project.urls]
+Repository = "https://github.com/dougfirlabs/scholia-a2a"
+Specification = "https://scholialang.org/ext/a2a/provenance/v1"
 
 [tool.setuptools.packages.find]
 include = ["scholia_a2a*"]
